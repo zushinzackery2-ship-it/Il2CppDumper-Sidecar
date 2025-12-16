@@ -1,14 +1,34 @@
 ﻿using System;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Il2CppDumper
 {
     class Program
     {
         private static Config config;
+
+        private static bool IsLikelyMetadataFile(byte[] file)
+        {
+            if (file == null || file.Length < 0x120)
+                return false;
+            var version = BitConverter.ToInt32(file, 4);
+            if (version < 16 || version > 31)
+                return false;
+            var imagesSize = BitConverter.ToUInt32(file, 0xAC);
+            var assembliesSize = BitConverter.ToUInt32(file, 0xB4);
+            if (imagesSize == 0 || assembliesSize == 0)
+                return false;
+            if (imagesSize % 0x28 != 0)
+                return false;
+            if (assembliesSize % 0x40 != 0)
+                return false;
+            return true;
+        }
 
         [STAThread]
         static void Main(string[] args)
@@ -17,6 +37,7 @@ namespace Il2CppDumper
             string il2cppPath = null;
             string metadataPath = null;
             string outputDir = null;
+            string hintPath = null;
 
             if (args.Length == 1)
             {
@@ -26,19 +47,39 @@ namespace Il2CppDumper
                     return;
                 }
             }
-            if (args.Length > 3)
+            if (args.Length > 4)
             {
                 ShowHelp();
                 return;
             }
-            if (args.Length > 1)
+            if (args.Length == 3 || args.Length == 4)
+            {
+                il2cppPath = args[0];
+                metadataPath = args[1];
+                outputDir = Path.GetFullPath(args[2]) + Path.DirectorySeparatorChar;
+                Directory.CreateDirectory(outputDir);
+                if (args.Length == 4)
+                {
+                    hintPath = args[3];
+                }
+            }
+            else if (args.Length == 2)
+            {
+                il2cppPath = args[0];
+                metadataPath = args[1];
+            }
+            else if (args.Length > 1)
             {
                 foreach (var arg in args)
                 {
                     if (File.Exists(arg))
                     {
                         var file = File.ReadAllBytes(arg);
-                        if (BitConverter.ToUInt32(file, 0) == 0xFAB11BAF)
+                        if (arg.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+                        {
+                            hintPath = arg;
+                        }
+                        else if (IsLikelyMetadataFile(file))
                         {
                             metadataPath = arg;
                         }
@@ -53,7 +94,11 @@ namespace Il2CppDumper
                     }
                 }
             }
-            outputDir ??= AppDomain.CurrentDomain.BaseDirectory;
+            if (string.IsNullOrEmpty(outputDir))
+            {
+                outputDir = Path.GetFullPath("DumpSDK") + Path.DirectorySeparatorChar;
+                Directory.CreateDirectory(outputDir);
+            }
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
                 if (il2cppPath == null)
@@ -65,10 +110,19 @@ namespace Il2CppDumper
                     if (ofd.ShowDialog())
                     {
                         il2cppPath = ofd.FileName;
-                        ofd.Filter = "global-metadata|global-metadata.dat";
+                        ofd.Filter = "Metadata (*.dat)|*.dat|All Files|*.*";
                         if (ofd.ShowDialog())
                         {
                             metadataPath = ofd.FileName;
+                            var hfd = new OpenFileDialog
+                            {
+                                Title = "Hint json (optional)",
+                                Filter = "Hint json (*.json)|*.json|All Files|*.*"
+                            };
+                            if (hfd.ShowDialog())
+                            {
+                                hintPath = hfd.FileName;
+                            }
                         }
                         else
                         {
@@ -94,7 +148,7 @@ namespace Il2CppDumper
             {
                 try
                 {
-                    if (Init(il2cppPath, metadataPath, out var metadata, out var il2Cpp))
+                    if (Init(il2cppPath, metadataPath, hintPath, out var metadata, out var il2Cpp))
                     {
                         Dump(metadata, il2Cpp, outputDir);
                     }
@@ -104,7 +158,7 @@ namespace Il2CppDumper
                     Console.WriteLine(e);
                 }
             }
-            if (config.RequireAnyKey)
+            if (args.Length == 0 && config.RequireAnyKey && Environment.UserInteractive && !Console.IsInputRedirected)
             {
                 Console.WriteLine("Press any key to exit...");
                 Console.ReadKey(true);
@@ -113,10 +167,10 @@ namespace Il2CppDumper
 
         static void ShowHelp()
         {
-            Console.WriteLine($"usage: {AppDomain.CurrentDomain.FriendlyName} <executable-file> <global-metadata> <output-directory>");
+            Console.WriteLine($"usage: {AppDomain.CurrentDomain.FriendlyName} <executable-file> <metadata.dat> <output-directory> [hint.json]");
         }
 
-        private static bool Init(string il2cppPath, string metadataPath, out Metadata metadata, out Il2Cpp il2Cpp)
+        private static bool Init(string il2cppPath, string metadataPath, string hintPath, out Metadata metadata, out Il2Cpp il2Cpp)
         {
             Console.WriteLine("Initializing metadata...");
             var metadataBytes = File.ReadAllBytes(metadataPath);
@@ -181,6 +235,11 @@ namespace Il2CppDumper
             var version = config.ForceIl2CppVersion ? config.ForceVersion : metadata.Version;
             il2Cpp.SetProperties(version, metadata.metadataUsagesCount);
             Console.WriteLine($"Il2Cpp Version: {il2Cpp.Version}");
+
+            if (TryInitFromHint(il2Cpp, metadataPath, hintPath))
+            {
+                return true;
+            }
             if (config.ForceDump || il2Cpp.CheckDump())
             {
                 if (il2Cpp is ElfBase elf)
@@ -213,9 +272,16 @@ namespace Il2CppDumper
                     if (!flag && il2Cpp is PE)
                     {
                         Console.WriteLine("Use custom PE loader");
-                        il2Cpp = PELoader.Load(il2cppPath);
-                        il2Cpp.SetProperties(version, metadata.metadataUsagesCount);
-                        flag = il2Cpp.PlusSearch(metadata.methodDefs.Count(x => x.methodIndex >= 0), metadata.typeDefs.Length, metadata.imageDefs.Length);
+                        try
+                        {
+                            il2Cpp = PELoader.Load(il2cppPath);
+                            il2Cpp.SetProperties(version, metadata.metadataUsagesCount);
+                            flag = il2Cpp.PlusSearch(metadata.methodDefs.Count(x => x.methodIndex >= 0), metadata.typeDefs.Length, metadata.imageDefs.Length);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Custom PE loader failed: {ex.GetType().Name}: {ex.Message}");
+                        }
                     }
                 }
                 if (!flag)
@@ -230,9 +296,21 @@ namespace Il2CppDumper
                 {
                     Console.WriteLine("ERROR: Can't use auto mode to process file, try manual mode.");
                     Console.Write("Input CodeRegistration: ");
-                    var codeRegistration = Convert.ToUInt64(Console.ReadLine(), 16);
+                    var crLine = Console.ReadLine();
+                    if (string.IsNullOrWhiteSpace(crLine))
+                    {
+                        Console.WriteLine("No manual input provided.");
+                        return false;
+                    }
+                    var codeRegistration = Convert.ToUInt64(crLine, 16);
                     Console.Write("Input MetadataRegistration: ");
-                    var metadataRegistration = Convert.ToUInt64(Console.ReadLine(), 16);
+                    var mrLine = Console.ReadLine();
+                    if (string.IsNullOrWhiteSpace(mrLine))
+                    {
+                        Console.WriteLine("No manual input provided.");
+                        return false;
+                    }
+                    var metadataRegistration = Convert.ToUInt64(mrLine, 16);
                     il2Cpp.Init(codeRegistration, metadataRegistration);
                 }
                 if (il2Cpp.Version >= 27 && il2Cpp.IsDumped)
@@ -251,18 +329,134 @@ namespace Il2CppDumper
             return true;
         }
 
+        private static bool TryInitFromHint(Il2Cpp il2Cpp, string metadataPath, string hintPathOverride)
+        {
+            try
+            {
+                var hintPath = !string.IsNullOrWhiteSpace(hintPathOverride)
+                    ? hintPathOverride
+                    : metadataPath + ".hint.json";
+                if (!File.Exists(hintPath))
+                {
+                    if (!string.IsNullOrWhiteSpace(hintPathOverride))
+                    {
+                        Console.WriteLine($"Hint not used: file not found: {hintPath}");
+                    }
+                    return false;
+                }
+                Console.WriteLine($"Hint found: {hintPath}");
+                var hint = JsonSerializer.Deserialize<DumpHint>(File.ReadAllText(hintPath));
+                if (hint == null)
+                {
+                    Console.WriteLine("Hint not used: parse returned null");
+                    return false;
+                }
+
+                if (il2Cpp is PE)
+                {
+                    var codeRegRva = ParseHexUlong(hint.il2cpp?.code_registration_rva);
+                    var metaRegRva = ParseHexUlong(hint.il2cpp?.metadata_registration_rva);
+                    ulong codeReg;
+                    ulong metaReg;
+                    if (codeRegRva != 0 && metaRegRva != 0)
+                    {
+                        Console.WriteLine($"Hint mode: RVA codeRegRva=0x{codeRegRva:x} metaRegRva=0x{metaRegRva:x}");
+                        codeReg = il2Cpp.ImageBase + codeRegRva;
+                        metaReg = il2Cpp.ImageBase + metaRegRva;
+                    }
+                    else
+                    {
+                        var runtimeBase = ParseHexUlong(hint.module?.base_addr);
+                        var codeRegRuntime = ParseHexUlong(hint.il2cpp?.code_registration);
+                        var metaRegRuntime = ParseHexUlong(hint.il2cpp?.metadata_registration);
+                        if (runtimeBase == 0 || codeRegRuntime == 0 || metaRegRuntime == 0)
+                        {
+                            Console.WriteLine("Hint not used: missing module.base or il2cpp registrations");
+                            return false;
+                        }
+                        if (codeRegRuntime < runtimeBase || metaRegRuntime < runtimeBase)
+                        {
+                            Console.WriteLine("Hint not used: runtime addresses are below module base");
+                            return false;
+                        }
+                        Console.WriteLine($"Hint mode: RuntimeVA moduleBase=0x{runtimeBase:x}");
+                        codeReg = il2Cpp.ImageBase + (codeRegRuntime - runtimeBase);
+                        metaReg = il2Cpp.ImageBase + (metaRegRuntime - runtimeBase);
+                    }
+                    Console.WriteLine($"Hint CodeRegistration : {codeReg:x}");
+                    Console.WriteLine($"Hint MetadataRegistration : {metaReg:x}");
+                    il2Cpp.Init(codeReg, metaReg);
+                    return true;
+                }
+
+                Console.WriteLine("Hint not used: only PE is supported");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Hint init failed: {ex.GetType().Name}: {ex.Message}");
+                return false;
+            }
+        }
+
+        private static ulong ParseHexUlong(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return 0;
+            }
+            value = value.Trim();
+            if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            {
+                value = value[2..];
+            }
+            if (ulong.TryParse(value, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var v))
+            {
+                return v;
+            }
+            return 0;
+        }
+
+        private sealed class DumpHint
+        {
+            public int schema { get; set; }
+            public DumpHintModule module { get; set; }
+            public DumpHintIl2Cpp il2cpp { get; set; }
+        }
+
+        private sealed class DumpHintModule
+        {
+            [JsonPropertyName("base")]
+            public string base_addr { get; set; }
+        }
+
+        private sealed class DumpHintIl2Cpp
+        {
+            public string code_registration { get; set; }
+            public string metadata_registration { get; set; }
+            public string code_registration_rva { get; set; }
+            public string metadata_registration_rva { get; set; }
+        }
+
         private static void Dump(Metadata metadata, Il2Cpp il2Cpp, string outputDir)
         {
             Console.WriteLine("Dumping...");
+            var outputRoot = outputDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var baseName = Path.GetFileName(outputRoot);
+            var sdkDir = string.Equals(baseName, "DumpSDK", StringComparison.OrdinalIgnoreCase)
+                ? outputRoot
+                : Path.Combine(outputRoot, "DumpSDK");
+            Directory.CreateDirectory(sdkDir);
+            var sdkOutputDir = sdkDir + Path.DirectorySeparatorChar;
             var executor = new Il2CppExecutor(metadata, il2Cpp);
             var decompiler = new Il2CppDecompiler(executor);
-            decompiler.Decompile(config, outputDir);
+            decompiler.Decompile(config, sdkOutputDir);
             Console.WriteLine("Done!");
             if (config.GenerateStruct)
             {
                 Console.WriteLine("Generate struct...");
                 var scriptGenerator = new StructGenerator(executor);
-                scriptGenerator.WriteScript(outputDir);
+                scriptGenerator.WriteScript(sdkOutputDir);
                 Console.WriteLine("Done!");
             }
             if (config.GenerateDummyDll)

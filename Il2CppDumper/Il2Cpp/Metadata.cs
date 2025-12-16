@@ -42,11 +42,7 @@ namespace Il2CppDumper
 
         public Metadata(Stream stream) : base(stream)
         {
-            var sanity = ReadUInt32();
-            if (sanity != 0xFAB11BAF)
-            {
-                throw new InvalidDataException("ERROR: Metadata file supplied is not valid metadata file.");
-            }
+            ReadUInt32();
             var version = ReadInt32();
             if (version < 0 || version > 1000)
             {

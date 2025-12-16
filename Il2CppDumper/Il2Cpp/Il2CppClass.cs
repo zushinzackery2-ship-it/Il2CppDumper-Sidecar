@@ -47,9 +47,9 @@ namespace Il2CppDumper
         public ulong unresolvedVirtualCallCount; //29.1 unresolvedIndirectCallCount;
         [Version(Min = 22)]
         public ulong unresolvedVirtualCallPointers;
-        [Version(Min = 29.1)]
+        [Version(Min = 29.1, Max = 30.99)]
         public ulong unresolvedInstanceCallPointers;
-        [Version(Min = 29.1)]
+        [Version(Min = 29.1, Max = 30.99)]
         public ulong unresolvedStaticCallPointers;
         [Version(Min = 23)]
         public ulong interopDataCount;

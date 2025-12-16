@@ -50,70 +50,49 @@ namespace Il2CppDumper
 
         protected bool AutoPlusInit(ulong codeRegistration, ulong metadataRegistration)
         {
-            if (codeRegistration != 0)
+            var originalCodeRegistration = codeRegistration;
+            var originalVersion = Version;
+
+            Console.WriteLine("MetadataRegistration : {0:x}", metadataRegistration);
+            if (metadataRegistration == 0)
             {
-                var limit = this is WebAssemblyMemory ? 0x35000u : 0x50000u; //TODO
-                if (Version >= 24.2)
+                return false;
+            }
+
+            var candidates = new List<ulong>(5);
+            void addCandidate(ulong value)
+            {
+                if (value == 0)
+                    return;
+                if (!candidates.Contains(value))
+                    candidates.Add(value);
+            }
+
+            var step = (ulong)(PointerSize * 2);
+            addCandidate(codeRegistration);
+            addCandidate(codeRegistration + step);
+            if (codeRegistration >= step)
+                addCandidate(codeRegistration - step);
+            addCandidate(originalCodeRegistration);
+            addCandidate(originalCodeRegistration + step);
+            if (originalCodeRegistration >= step)
+                addCandidate(originalCodeRegistration - step);
+
+            foreach (var cr in candidates)
+            {
+                Console.WriteLine("CodeRegistration : {0:x}", cr);
+                try
                 {
-                    pCodeRegistration = MapVATR<Il2CppCodeRegistration>(codeRegistration);
-                    if (Version == 31)
-                    {
-                        if (pCodeRegistration.genericMethodPointersCount > limit)
-                        {
-                            codeRegistration -= PointerSize * 2;
-                        }
-                        else
-                        {
-                            Version = 29;
-                            Console.WriteLine($"Change il2cpp version to: {Version}");
-                        }
-                    }
-                    if (Version == 29)
-                    {
-                        if (pCodeRegistration.genericMethodPointersCount > limit)
-                        {
-                            Version = 29.1;
-                            codeRegistration -= PointerSize * 2;
-                            Console.WriteLine($"Change il2cpp version to: {Version}");
-                        }
-                    }
-                    if (Version == 27)
-                    {
-                        if (pCodeRegistration.reversePInvokeWrapperCount > limit)
-                        {
-                            Version = 27.1;
-                            codeRegistration -= PointerSize;
-                            Console.WriteLine($"Change il2cpp version to: {Version}");
-                        }
-                    }
-                    if (Version == 24.4)
-                    {
-                        codeRegistration -= PointerSize * 2;
-                        if (pCodeRegistration.reversePInvokeWrapperCount > limit)
-                        {
-                            Version = 24.5;
-                            codeRegistration -= PointerSize;
-                            Console.WriteLine($"Change il2cpp version to: {Version}");
-                        }
-                    }
-                    if (Version == 24.2)
-                    {
-                        if (pCodeRegistration.interopDataCount == 0) //TODO
-                        {
-                            Version = 24.3;
-                            codeRegistration -= PointerSize * 2;
-                            Console.WriteLine($"Change il2cpp version to: {Version}");
-                        }
-                    }
+                    Version = originalVersion;
+                    Init(cr, metadataRegistration);
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"AutoPlusInit failed at {cr:x}: {ex.GetType().Name}");
                 }
             }
-            Console.WriteLine("CodeRegistration : {0:x}", codeRegistration);
-            Console.WriteLine("MetadataRegistration : {0:x}", metadataRegistration);
-            if (codeRegistration != 0 && metadataRegistration != 0)
-            {
-                Init(codeRegistration, metadataRegistration);
-                return true;
-            }
+
             return false;
         }
 
@@ -157,7 +136,33 @@ namespace Il2CppDumper
                 Console.WriteLine($"Change il2cpp version to: {Version}");
                 pCodeRegistration = MapVATR<Il2CppCodeRegistration>(codeRegistration);
             }
+
+            Console.WriteLine($"pCodeRegistration.reversePInvokeWrapperCount={pCodeRegistration.reversePInvokeWrapperCount}");
+            Console.WriteLine($"pCodeRegistration.genericMethodPointersCount={pCodeRegistration.genericMethodPointersCount}");
+            Console.WriteLine($"pCodeRegistration.invokerPointersCount={pCodeRegistration.invokerPointersCount}");
+            Console.WriteLine($"pCodeRegistration.codeGenModulesCount={pCodeRegistration.codeGenModulesCount}");
+            Console.WriteLine($"pCodeRegistration.reversePInvokeWrappers=0x{pCodeRegistration.reversePInvokeWrappers:x}");
+            Console.WriteLine($"pCodeRegistration.genericMethodPointers=0x{pCodeRegistration.genericMethodPointers:x}");
+            Console.WriteLine($"pCodeRegistration.invokerPointers=0x{pCodeRegistration.invokerPointers:x}");
+            Console.WriteLine($"pCodeRegistration.codeGenModules=0x{pCodeRegistration.codeGenModules:x}");
+            Console.WriteLine($"pCodeRegistration.unresolvedVirtualCallCount={pCodeRegistration.unresolvedVirtualCallCount}");
+            Console.WriteLine($"pCodeRegistration.unresolvedVirtualCallPointers=0x{pCodeRegistration.unresolvedVirtualCallPointers:x}");
+            Console.WriteLine($"pCodeRegistration.unresolvedInstanceCallPointers=0x{pCodeRegistration.unresolvedInstanceCallPointers:x}");
+            Console.WriteLine($"pCodeRegistration.unresolvedStaticCallPointers=0x{pCodeRegistration.unresolvedStaticCallPointers:x}");
+            Console.WriteLine($"pCodeRegistration.interopDataCount={pCodeRegistration.interopDataCount}");
+            Console.WriteLine($"pCodeRegistration.interopData=0x{pCodeRegistration.interopData:x}");
+            Console.WriteLine($"pCodeRegistration.windowsRuntimeFactoryCount={pCodeRegistration.windowsRuntimeFactoryCount}");
+            Console.WriteLine($"pCodeRegistration.windowsRuntimeFactoryTable=0x{pCodeRegistration.windowsRuntimeFactoryTable:x}");
+
             pMetadataRegistration = MapVATR<Il2CppMetadataRegistration>(metadataRegistration);
+
+            Console.WriteLine($"pMetadataRegistration.typesCount={pMetadataRegistration.typesCount}");
+            Console.WriteLine($"pMetadataRegistration.fieldOffsetsCount={pMetadataRegistration.fieldOffsetsCount}");
+            Console.WriteLine($"pMetadataRegistration.methodSpecsCount={pMetadataRegistration.methodSpecsCount}");
+            Console.WriteLine($"pMetadataRegistration.types=0x{pMetadataRegistration.types:x}");
+            Console.WriteLine($"pMetadataRegistration.fieldOffsets=0x{pMetadataRegistration.fieldOffsets:x}");
+            Console.WriteLine($"pMetadataRegistration.methodSpecs=0x{pMetadataRegistration.methodSpecs:x}");
+
             genericMethodPointers = MapVATR<ulong>(pCodeRegistration.genericMethodPointers, pCodeRegistration.genericMethodPointersCount);
             invokerPointers = MapVATR<ulong>(pCodeRegistration.invokerPointers, pCodeRegistration.invokerPointersCount);
             if (Version < 27)
@@ -325,9 +330,21 @@ namespace Il2CppDumper
             if (Version >= 24.2)
             {
                 var methodToken = methodDef.token;
-                var ptrs = codeGenModuleMethodPointers[imageName];
+                if (!codeGenModuleMethodPointers.TryGetValue(imageName, out var ptrs) || ptrs == null)
+                {
+                    return 0;
+                }
                 var methodPointerIndex = methodToken & 0x00FFFFFFu;
-                return ptrs[methodPointerIndex - 1];
+                if (methodPointerIndex == 0)
+                {
+                    return 0;
+                }
+                var idx = (int)methodPointerIndex - 1;
+                if (idx < 0 || idx >= ptrs.Length)
+                {
+                    return 0;
+                }
+                return ptrs[idx];
             }
             else
             {

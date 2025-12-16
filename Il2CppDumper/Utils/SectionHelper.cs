@@ -190,6 +190,10 @@ namespace Il2CppDumper
                         pointerInExec = true;
                     }
                 }
+                if (codeRegistration == 0)
+                {
+                    codeRegistration = FindCodeRegistrationByCodeGenModules();
+                }
                 return codeRegistration;
             }
             return FindCodeRegistrationOld();
@@ -203,9 +207,19 @@ namespace Il2CppDumper
             }
             if (il2Cpp.Version >= 27)
             {
-                return FindMetadataRegistrationV21();
+                var mr = FindMetadataRegistrationV21();
+                if (mr == 0)
+                {
+                    mr = FindMetadataRegistrationByMetadataUsages();
+                }
+                return mr;
             }
-            return FindMetadataRegistrationOld();
+            var mrOld = FindMetadataRegistrationOld();
+            if (mrOld == 0)
+            {
+                mrOld = FindMetadataRegistrationByMetadataUsages();
+            }
+            return mrOld;
         }
 
         private ulong FindCodeRegistrationOld()
@@ -363,7 +377,12 @@ namespace Il2CppDumper
             foreach (var sec in secs)
             {
                 il2Cpp.Position = sec.offset;
-                var buff = il2Cpp.ReadBytes((int)(sec.offsetEnd - sec.offset));
+                var secLen = sec.offsetEnd - sec.offset;
+                if (secLen <= 0 || secLen > int.MaxValue)
+                {
+                    continue;
+                }
+                var buff = il2Cpp.ReadBytes((int)secLen);
                 foreach (var index in buff.Search(featureBytes))
                 {
                     var dllva = (ulong)index + sec.address;
@@ -404,6 +423,321 @@ namespace Il2CppDumper
                 }
             }
             return 0ul;
+        }
+
+        private ulong FindCodeRegistrationByCodeGenModules()
+        {
+            if (imageCount <= 0)
+            {
+                return 0ul;
+            }
+
+            foreach (var sec in data)
+            {
+                il2Cpp.Position = sec.offset;
+                var secLen = sec.offsetEnd - sec.offset;
+                if (secLen <= 0 || secLen > int.MaxValue)
+                {
+                    continue;
+                }
+                var buff = il2Cpp.ReadBytes((int)secLen);
+                var stepI = (int)il2Cpp.PointerSize;
+                var end = buff.Length - stepI * 2;
+                for (var index = 0; index <= end; index += stepI)
+                {
+                    var count = stepI == 8
+                        ? BitConverter.ToUInt64(buff, index)
+                        : BitConverter.ToUInt32(buff, index);
+                    if (count != (ulong)imageCount)
+                    {
+                        continue;
+                    }
+                    var next = index + stepI;
+                    var ptr = stepI == 8
+                        ? BitConverter.ToUInt64(buff, next)
+                        : BitConverter.ToUInt32(buff, next);
+                    if (ptr == 0)
+                    {
+                        continue;
+                    }
+                    if (!TryCheckCodeGenModulesArray(ptr))
+                    {
+                        continue;
+                    }
+                    var hit = (ulong)index + sec.address;
+                    var best = FindBestCodeRegistrationStartFromHit(hit, ptr);
+                    if (best != 0)
+                    {
+                        return best;
+                    }
+                }
+            }
+            return 0ul;
+        }
+
+        private ulong FindBestCodeRegistrationStartFromHit(ulong codeGenModulesCountAddress, ulong codeGenModules)
+        {
+            var bestScore = -1;
+            ulong bestAddr = 0;
+            var stepU = (ulong)il2Cpp.PointerSize;
+            var maxBack = 64;
+            for (var back = 0; back <= maxBack; back++)
+            {
+                var start = codeGenModulesCountAddress - (ulong)back * stepU;
+                try
+                {
+                    var cr = il2Cpp.MapVATR<Il2CppCodeRegistration>(start);
+                    if (cr.codeGenModulesCount != (ulong)imageCount)
+                    {
+                        continue;
+                    }
+                    if (cr.codeGenModules != codeGenModules)
+                    {
+                        continue;
+                    }
+
+                    var score = 0;
+                    if (cr.invokerPointersCount > 0 && cr.invokerPointers != 0)
+                    {
+                        score += 2;
+                        if (TryCheckPointerArrayInExec(cr.invokerPointers, cr.invokerPointersCount))
+                        {
+                            score += 6;
+                        }
+                    }
+                    if (cr.genericMethodPointersCount > 0 && cr.genericMethodPointers != 0)
+                    {
+                        score += 2;
+                        if (TryCheckPointerArrayInExec(cr.genericMethodPointers, cr.genericMethodPointersCount))
+                        {
+                            score += 6;
+                        }
+                    }
+                    if (cr.reversePInvokeWrapperCount == 0 || cr.reversePInvokeWrappers != 0)
+                    {
+                        score += 1;
+                    }
+                    if (cr.unresolvedVirtualCallCount == 0 || cr.unresolvedVirtualCallPointers != 0)
+                    {
+                        score += 1;
+                    }
+
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        bestAddr = start;
+                    }
+                }
+                catch
+                {
+                }
+            }
+
+            return bestAddr;
+        }
+
+        private bool TryCheckPointerArrayInExec(ulong arrayPtr, ulong count)
+        {
+            try
+            {
+                if (arrayPtr == 0 || count == 0)
+                {
+                    return false;
+                }
+                var ra = il2Cpp.MapVATR(arrayPtr);
+                if (ra == 0)
+                {
+                    return false;
+                }
+                var sample = (int)Math.Min((ulong)3, count);
+                il2Cpp.Position = ra;
+                for (var i = 0; i < sample; i++)
+                {
+                    var p = il2Cpp.ReadUIntPtr();
+                    if (p == 0)
+                    {
+                        return false;
+                    }
+                    if (!exec.Any(y => p >= y.address && p <= y.addressEnd))
+                    {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private bool TryCheckCodeGenModulesArray(ulong codeGenModules)
+        {
+            try
+            {
+                var ra = il2Cpp.MapVATR(codeGenModules);
+                if (ra == 0)
+                {
+                    return false;
+                }
+                il2Cpp.Position = ra;
+                var sample = Math.Min(imageCount, 3);
+                for (var i = 0; i < sample; i++)
+                {
+                    var p = il2Cpp.ReadUIntPtr();
+                    if (p == 0)
+                    {
+                        return false;
+                    }
+                    var m = il2Cpp.MapVATR<Il2CppCodeGenModule>(p);
+                    var name = il2Cpp.ReadStringToNull(il2Cpp.MapVATR(m.moduleName));
+                    if (string.IsNullOrEmpty(name))
+                    {
+                        return false;
+                    }
+                    if (name.IndexOf(".dll", StringComparison.OrdinalIgnoreCase) < 0)
+                    {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private ulong FindMetadataRegistrationByMetadataUsages()
+        {
+            if (metadataUsagesCount <= 0)
+            {
+                return 0ul;
+            }
+
+            foreach (var sec in data)
+            {
+                il2Cpp.Position = sec.offset;
+                var secLen = sec.offsetEnd - sec.offset;
+                if (secLen <= 0 || secLen > int.MaxValue)
+                {
+                    continue;
+                }
+                var buff = il2Cpp.ReadBytes((int)secLen);
+                var stepI = (int)il2Cpp.PointerSize;
+                var end = buff.Length - stepI * 2;
+                for (var index = 0; index <= end; index += stepI)
+                {
+                    var count = stepI == 8
+                        ? BitConverter.ToUInt64(buff, index)
+                        : BitConverter.ToUInt32(buff, index);
+                    if (count != (ulong)metadataUsagesCount)
+                    {
+                        continue;
+                    }
+                    var next = index + stepI;
+                    var ptr = stepI == 8
+                        ? BitConverter.ToUInt64(buff, next)
+                        : BitConverter.ToUInt32(buff, next);
+                    if (ptr == 0)
+                    {
+                        continue;
+                    }
+                    if (!TryCheckPointerArrayInBss(ptr, (ulong)metadataUsagesCount))
+                    {
+                        continue;
+                    }
+                    var hit = (ulong)index + sec.address;
+                    var best = FindBestMetadataRegistrationStartFromHit(hit, ptr);
+                    if (best != 0)
+                    {
+                        return best;
+                    }
+                }
+            }
+            return 0ul;
+        }
+
+        private ulong FindBestMetadataRegistrationStartFromHit(ulong metadataUsagesCountAddress, ulong metadataUsages)
+        {
+            var bestScore = -1;
+            ulong bestAddr = 0;
+            var stepU = (ulong)il2Cpp.PointerSize;
+            var maxBack = 64;
+            for (var back = 0; back <= maxBack; back++)
+            {
+                var start = metadataUsagesCountAddress - (ulong)back * stepU;
+                try
+                {
+                    var mr = il2Cpp.MapVATR<Il2CppMetadataRegistration>(start);
+                    if (mr.metadataUsagesCount != (ulong)metadataUsagesCount)
+                    {
+                        continue;
+                    }
+                    if (mr.metadataUsages != metadataUsages)
+                    {
+                        continue;
+                    }
+
+                    var score = 0;
+                    if (mr.typesCount > 0 && mr.types != 0)
+                    {
+                        score += 1;
+                    }
+                    if (mr.fieldOffsetsCount > 0 && mr.fieldOffsets != 0)
+                    {
+                        score += 1;
+                    }
+                    if (TryCheckPointerArrayInBss(mr.metadataUsages, (ulong)metadataUsagesCount))
+                    {
+                        score += 6;
+                    }
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        bestAddr = start;
+                    }
+                }
+                catch
+                {
+                }
+            }
+            return bestAddr;
+        }
+
+        private bool TryCheckPointerArrayInBss(ulong arrayPtr, ulong count)
+        {
+            try
+            {
+                if (arrayPtr == 0 || count == 0)
+                {
+                    return false;
+                }
+                var ra = il2Cpp.MapVATR(arrayPtr);
+                if (ra == 0)
+                {
+                    return false;
+                }
+                var sample = (int)Math.Min((ulong)3, count);
+                il2Cpp.Position = ra;
+                for (var i = 0; i < sample; i++)
+                {
+                    var p = il2Cpp.ReadUIntPtr();
+                    if (p == 0)
+                    {
+                        return false;
+                    }
+                    if (!bss.Any(y => p >= y.address && p <= y.addressEnd))
+                    {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private IEnumerable<ulong> FindReference(ulong addr)

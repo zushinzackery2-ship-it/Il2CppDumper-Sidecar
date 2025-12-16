@@ -241,7 +241,10 @@ namespace Il2CppDumper
             Il2CppRGCTXDefinition[] collection = null;
             if (il2Cpp.Version >= 24.2)
             {
-                il2Cpp.rgctxsDictionary[imageName].TryGetValue(typeDef.token, out collection);
+                if (il2Cpp.rgctxsDictionary.TryGetValue(imageName, out var dic))
+                {
+                    dic.TryGetValue(typeDef.token, out collection);
+                }
             }
             else
             {
@@ -259,7 +262,10 @@ namespace Il2CppDumper
             Il2CppRGCTXDefinition[] collection = null;
             if (il2Cpp.Version >= 24.2)
             {
-                il2Cpp.rgctxsDictionary[imageName].TryGetValue(methodDef.token, out collection);
+                if (il2Cpp.rgctxsDictionary.TryGetValue(imageName, out var dic))
+                {
+                    dic.TryGetValue(methodDef.token, out collection);
+                }
             }
             else
             {
