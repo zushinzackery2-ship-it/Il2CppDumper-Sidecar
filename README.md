@@ -6,10 +6,8 @@ Unity il2cpp逆向工程
 
 ## 本分支增强
 
-* Sidecar hint 机制：当存在 `<global-metadata>.hint.json` 时，优先使用其中的 `code_registration_rva`/`metadata_registration_rva` 初始化，减少手动输入与启发式搜索。
-* Hint 字段不完整时自动回退到原有初始化流程（auto search / symbol search / manual）。
-* 日志增强：启动时明确提示是否使用 hint、使用 rva 还是 runtimeVA、以及不使用的原因。
-* 稳定性增强：对 section 扫描中的大块读取增加长度保护，降低异常节区导致崩溃的概率。
+* Hint 初始化：支持读取 `<metadata>.hint.json`（或手动指定 `hint.json`）直接初始化 `CodeRegistration/MetadataRegistration`。
+* 稳定性：对 section 扫描的大块读取做了保护，降低异常节区导致崩溃的概率。
 
 ## 功能
 
@@ -23,17 +21,30 @@ Unity il2cpp逆向工程
 
 ## 使用说明
 
-直接运行 `Il2CppDumper.exe` 并依次选择 il2cpp 的可执行文件和 `global-metadata.dat` 文件，然后根据提示输入相应信息。
+直接运行 `Il2CppDumper.exe` 并依次选择：
 
-程序运行完成后将在当前运行目录下生成输出文件。
+1. il2cpp 可执行文件（PC 通常为 `GameAssembly.dll` / `*Assembly.dll`）
+2. metadata 文件（`*.dat`，文件名不要求必须是 `global-metadata.dat`）
+3.（可选）hint 文件（`*.json`，用于手动指定 hint；不选则默认读取 `<metadata>.hint.json`）
+
+未指定输出目录时，默认输出到相对路径 `./DumpSDK/`。
 
 ### 命令行
 
 ```
-Il2CppDumper.exe <executable-file> <global-metadata> <output-directory>
+Il2CppDumper.exe <executable-file> <metadata.dat> <output-directory> [hint.json]
 ```
 
 ### 输出文件
+
+输出目录结构：
+
+* `DummyDll/`：还原的 DLL 文件（不包含代码）
+* `DumpSDK/`：代码/脚本相关产物（`dump.cs` / `il2cpp.h` / `script.json` / `stringliteral.json` 等）
+
+说明：
+
+* 如果你指定的 `<output-directory>` 本身就叫 `DumpSDK`，则不会出现 `DumpSDK/DumpSDK` 嵌套。
 
 #### DummyDll
 
@@ -80,8 +91,11 @@ Il2CppDumper.exe <executable-file> <global-metadata> <output-directory>
 * `DumpMethod`，`DumpField`，`DumpProperty`，`DumpAttribute`，`DumpFieldOffset`, `DumpMethodOffset`, `DumpTypeDefIndex`
   * 是否在 `dump.cs` 输出相应的内容
 
-* `GenerateDummyDll`，`GenerateScript`
-  * 是否生成这些内容
+* `GenerateDummyDll`
+  * 是否生成 `DummyDll/`
+
+* `GenerateStruct`
+  * 是否生成 `DumpSDK/` 下的 `il2cpp.h` / `script.json` / `stringliteral.json` 等
 
 * `DummyDllAddToken`
   * 是否在 DummyDll 中添加 token
@@ -102,7 +116,7 @@ Il2CppDumper.exe <executable-file> <global-metadata> <output-directory>
 
 #### `ERROR: Metadata file supplied is not valid metadata file.`
 
-`global-metadata.dat` 已被加密。关于解密的问题请去相关论坛寻求帮助，请不要在 issues 提问。
+`metadata.dat` 已被加密或不是有效的 metadata。关于解密的问题请去相关论坛寻求帮助，请不要在 issues 提问。
 
 如果你的文件是 `libil2cpp.so` 并且你拥有一台已 root 的安卓手机，你可以尝试另一个项目 [Zygisk-Il2CppDumper](https://github.com/Perfare/Zygisk-Il2CppDumper)，它能够无视 `global-metadata.dat` 加密。
 
