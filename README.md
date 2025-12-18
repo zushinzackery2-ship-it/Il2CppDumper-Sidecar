@@ -1,125 +1,277 @@
-# Il2CppDumper
+<div align="center">
 
-[![Build status](https://ci.appveyor.com/api/projects/status/anhqw33vcpmp8ofa?svg=true)](https://ci.appveyor.com/project/Perfare/il2cppdumper/branch/master/artifacts)
+# UnityExternalResolve
 
-> Unity IL2CPP 逆向工程工具（本仓库为增强分支）
+**Unity 运行时内存结构算法还原库**
 
-## 目录
+*跨进程读取 | Header-Only | Mono & IL2CPP*
 
-- [本分支增强](#本分支增强)
-- [功能](#功能)
-- [使用说明](#使用说明)
-  - [交互模式](#交互模式)
-  - [命令行](#命令行)
-- [输出文件](#输出文件)
-  - [目录结构](#目录结构)
-  - [DummyDll](#dummydll)
-  - [其它输出](#其它输出)
-- [关于 config.json](#关于-configjson)
-- [常见问题](#常见问题)
-- [License](#license)
-- [感谢](#感谢)
+![C++](https://img.shields.io/badge/C%2B%2B-17-blue?style=flat-square)
+![Platform](https://img.shields.io/badge/Platform-Windows%20x64-lightgrey?style=flat-square)
+![Header Only](https://img.shields.io/badge/Header--Only-Yes-green?style=flat-square)
+![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)
 
-## 本分支增强
+</div>
 
-- Hint 初始化：支持读取 `<metadata>.hint.json`（或手动指定 `hint.json`）直接初始化 `CodeRegistration/MetadataRegistration`。
-- 稳定性：对 section 扫描的大块读取做了保护，降低异常节区导致崩溃的概率。
+---
 
-## 功能
+> [!CAUTION]
+> **免责声明**  
+> 本项目仅用于学习研究 Unity 引擎内部结构与算法还原，以及在合法授权前提下的游戏 Modding/插件开发学习与验证，不得用于任何违反游戏服务条款或法律法规的行为。  
+> 使用本项目产生的一切后果由使用者自行承担，作者不承担任何责任。  
+> 请在合法合规的前提下使用本项目。
 
-- 还原DLL文件（不包含代码），可用于提取 `MonoBehaviour` 和 `MonoScript`
-- 支持 ELF, ELF64, Mach-O, PE, NSO 和 WASM 格式
-- 支持 Unity 5.3 - 2022.2
-- 生成 IDA 和 Ghidra 的脚本，帮助 IDA 和 Ghidra 更好的分析 il2cpp 文件
-- 生成结构体头文件
-- 支持从内存 dump 的 `libil2cpp.so` 文件以绕过保护
-- 支持绕过简单的 PE 保护
+> [!NOTE]
+> **版本兼容性说明**  
+> 本项目的结构与算法主要基于 Unity 2020~2022 版本进行逆向还原；Unity 版本过老时，部分结构偏移/算法可能无法完全兼容。  
+> 本库仅支持 Windows x64（64 位）。
 
-## 使用说明
+> [!IMPORTANT]
+> **代码重构说明**  
+> 当前项目包含大量 AI 重构代码，如发现问题欢迎提交 Issue。
 
-### 交互模式
+## 访问器
 
-直接运行 `Il2CppDumper.exe` 并依次选择：
+- **全局上下文**：通过 `SetGlobalMemoryAccessor` / `SetGOMGlobal` / `SetDefaultRuntime` 一次性设置，后续所有 API 直接调用、直接返回结果，无需反复传参。
+- **可插拔内存访问**：默认提供 `WinAPIMemoryAccessor`（基于 `ReadProcessMemory`），也可以替换为你自己的 `IMemoryAccessor` 实现。
+- **Header-only**：纯头文件库，无需编译，直接 `#include "ExternalResolve.hpp"` 即可使用。
+- **Mono / IL2CPP 双支持**：通过 `RuntimeKind` 切换，自动适配两种运行时的内存布局差异。
 
-1. il2cpp 可执行文件（PC 通常为 `GameAssembly.dll` / `*Assembly.dll`）
-2. metadata 文件（`*.dat`，文件名不要求必须是 `global-metadata.dat`）
-3.（可选）hint 文件（`*.json`，用于手动指定 hint；不选则默认读取 `<metadata>.hint.json`）
+## 特性
 
-未指定输出目录时，默认输出到相对路径 `./DumpSDK/`。
+| 功能 | 说明 |
+|:-----|:-----|
+| **进程/模块解析** | 提供 `FindProcessId` / `FindModuleBase` 等接口（解析策略可替换） |
+| **跨进程内存访问** | 默认 `WinAPIMemoryAccessor`（`ReadProcessMemory`），也可自定义 `IMemoryAccessor` |
+| **全局上下文配置** | `SetGlobalMemoryAccessor` / `SetTargetPid` / `SetDefaultRuntime` 等一次性配置 |
+| **Mono / IL2CPP** | 通过 `RuntimeKind` 切换，适配两种运行时的内存结构 |
+| **GameObjectManager 定位** | 提供 `FindGOMGlobalByScan` 等接口用于定位 `gomGlobal` 指针槽 |
+| **GameObject / Component 枚举** | `EnumerateGameObjects` / `EnumerateComponents` 遍历对象 |
+| **按 Tag/Name/类型查找** | 支持按 Tag、Name、脚本类型等条件查找（见 `GOMSearch.hpp`） |
+| **Transform 世界坐标** | 读取层级并做矩阵/向量运算，得到真实世界坐标 |
+| **相机 W2S** | 读取相机矩阵，世界坐标转屏幕坐标 |
+| **IL2CPP Metadata 扫描/导出** | 扫描并导出 `global-metadata`，并可额外导出 `*.hint.json` |
 
-### 命令行
+---
 
-```text
-Il2CppDumper.exe <executable-file> <metadata.dat> <output-directory> [hint.json]
+## 编译要求
+
+- **C++ 标准**：C++17 或以上
+- **编译器**：MSVC (Visual Studio 2019+) 或 MinGW (GCC 9+)
+- **平台**：Windows x64
+- **头文件库**：GLM（数学库）
+
+## 依赖安装
+
+ 需要手动添加 [GLM 库](https://github.com/g-truc/glm)：
+
+```bash
+git clone https://github.com/g-truc/glm.git
 ```
 
-## 输出文件
+---
 
-### 目录结构
+<details>
+<summary><strong>目录结构</strong></summary>
 
-- **`DummyDll/`**
-  - 还原的 DLL 文件（不包含代码）
-- **`DumpSDK/`**
-  - 代码/脚本相关产物（`dump.cs` / `il2cpp.h` / `script.json` / `stringliteral.json` 等）
+```
+项目根目录/
+├── glm/
+│   ├── glm.hpp
+│   └── ...
+├── ExternalResolve.hpp
+├── Camera/
+├── Core/
+│   ├── UnityExternalMemory.hpp        # IMemoryAccessor 接口
+│   ├── UnityExternalMemoryConfig.hpp  # 全局访问器 + ReadPtrGlobal
+│   └── UnityExternalTypes.hpp         # RuntimeKind / TypeInfo / GetManagedType
+│
+├── MemoryAccessor/        # 内存访问实现（可替换）
+│   ├── Accessor/                      # 访问器实现
+│   │   └── WinAPIMemoryAccessor.hpp   # 默认 WinAPI 实现
+│   ├── AccessorContainer.hpp          # 全局访问器容器
+│   └── Resolver/
+│       ├── UnityWindowResolver.hpp    # 按窗口类名枚举 PID
+│       └── WinAPIResolver.hpp         # 进程/模块解析
+│
+├── GameObjectManager/     # GameObjectManager 遍历 + 原生结构
+│   ├── GOMpUnit/
+│   │   ├── GOM.hpp                    # 聚合头文件
+│   │   ├── Bucket/                    # Hash Bucket 结构
+│   │   │   ├── Bucket.hpp
+│   │   │   └── HashCalc.hpp
+│   │   ├── Globals/                   # 全局指针
+│   │   │   └── GOMGlobal.hpp
+│   │   ├── ListNode/                  # 链表节点
+│   │   │   └── ListNode.hpp
+│   │   ├── Managed/                   # 托管对象
+│   │   │   └── Managed.hpp
+│   │   ├── Manager/                   # 管理器
+│   │   │   └── Manager.hpp
+│   │   ├── Pool/                      # 对象池
+│   │   │   └── Pool.hpp
+│   │   ├── Search/                    # 查找功能
+│   │   │   └── GOMSearch.hpp
+│   │   └── Walker/                    # 遍历器
+│   │       ├── GOMWalker.hpp
+│   │       ├── WalkerImpl.hpp
+│   │       └── WalkerTypes.hpp
+│   ├── Managed/ManagedObject.hpp      # 托管对象封装
+│   └── Native/
+│       ├── NativeGameObject.hpp
+│       ├── NativeComponent.hpp
+│       └── NativeTransform.hpp
+│
+├── Camera/                # 相机 + W2S
+│   ├── UnityExternalCamera.hpp        # FindMainCamera / GetCameraMatrix
+│   └── UnityExternalWorldToScreen.hpp # WorldToScreenPoint
+│
+├── Metadata/              # IL2CPP global-metadata 扫描与导出
+│   ├── Core/
+│   │   └── Config.hpp                # 全局配置（目标进程/模块/版本）
+│   ├── PE/
+│   │   └── Parser.hpp                # PE 头/节区解析
+│   ├── Header/
+│   │   └── Parser.hpp                # Metadata 头部评分/大小计算
+│   ├── Scanner/
+│   │   ├── Pointer.hpp               # s_GlobalMetadata 指针扫描
+│   │   └── Registration/
+│   │       ├── Types.hpp             # Il2CppRegs, CodeRegOffsets
+│   │       ├── Helpers.hpp           # 磁盘 PE 读取/范围检查
+│   │       └── Scanner.hpp           # FindCodeRegistration/FindMetadataRegistration
+│   ├── Hint/
+│   │   ├── Struct.hpp                # MetadataHint 结构体
+│   │   ├── Json.hpp                  # JSON 序列化
+│   │   └── Export.hpp                # ExportMetadataHintJsonTScore/TVersion/ToFile
+│   ├── Export/
+│   │   └── Export.hpp                # ExportMetadataTScore/TVersion
+│   └── MetadataAll.hpp               # 聚合头文件
+│
+├── Analysis/              # 算法与结构分析文档
+│   ├── Structure/
+│   │   ├── GOM数据结构.txt
+│   │   ├── IL2CPP内存结构.txt
+│   │   └── MONO内存结构.txt
+│   └── Algorithm/
+│       ├── GOM定位算法.txt
+│       ├── GOM解析算法.txt
+│       ├── Metadata检索与导出算法.txt
+│       ├── TagHash掩码算法.txt
+│       ├── Tag查找算法.txt
+│       ├── Transform变换坐标算法.txt
+│       └── 相机W2S算法.txt
+│
+└── ExternalResolve.hpp    # 统一入口（include 这个即可）
 
-> 说明：如果你指定的 `<output-directory>` 本身就叫 `DumpSDK`，则不会出现 `DumpSDK/DumpSDK` 嵌套。
+```
 
-### DummyDll
+</details>
 
-文件夹，包含所有还原的 DLL 文件。
+---
 
-使用 [dnSpy](https://github.com/0xd4d/dnSpy)、[ILSpy](https://github.com/icsharpcode/ILSpy) 或其他 .Net 反编译工具即可查看具体信息。
+## 快速开始
 
-可用于提取 Unity 的 `MonoBehaviour` 和 `MonoScript`，适用于 [UtinyRipper](https://github.com/mafaca/UtinyRipper) 或 [UABE](https://7daystodie.com/forums/showthread.php?22675-Unity-Assets-Bundle-Extractor) 等。
+```cpp
+#include "External/ExternalResolve.hpp"
 
-### 其它输出
+int main()
+{
+    // 1. 解析进程和模块（以 WinAPI 为例）
+    UnityExternal::UseWinAPIResolvers();
+    DWORD pid = UnityExternal::FindProcessId(L"Game.exe");
+    HANDLE hProcess = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid);
 
-| 文件 | 用途 |
-| --- | --- |
-| `ida.py` | 用于 IDA。 |
-| `ida_with_struct.py` | 用于 IDA，读取 `il2cpp.h` 文件并在 IDA 中应用结构信息。 |
-| `il2cpp.h` | 包含结构体的头文件。 |
-| `ghidra.py` | 用于 Ghidra。 |
-| `Il2CppBinaryNinja/` | 用于 BinaryNinja。 |
-| `ghidra_wasm.py` | 用于 Ghidra，和 [ghidra-wasm-plugin](https://github.com/nneonneo/ghidra-wasm-plugin) 一起工作。 |
-| `script.json` | 用于 IDA 和 Ghidra 脚本。 |
-| `stringliteral.json` | 包含所有 stringLiteral 信息。 |
+    // 2. 创建内存访问器并设置为全局
+    UnityExternal::WinAPIMemoryAccessor accessor(hProcess);
+    UnityExternal::SetGlobalMemoryAccessor(&accessor);
 
-## 关于 config.json
+    // 3. 写入 gomGlobal 指针槽地址和默认运行时
+    std::uintptr_t unityPlayerBase = UnityExternal::FindModuleBase(pid, L"UnityPlayer.dll");
+    if (!unityPlayerBase)
+    {
+        std::cerr << "Failed to find UnityPlayer.dll" << std::endl;
+        CloseHandle(hProcess);
+        return 1;
+    }
+    
+    UnityExternal::SetTargetPid(pid);
+    std::uint64_t offset = UnityExternal::FindGOMGlobalByScan();
+    if (!offset)
+    {
+        CloseHandle(hProcess);
+        return 1;
+    }
+    UnityExternal::SetGOMGlobal(unityPlayerBase + (std::uintptr_t)offset);
+    UnityExternal::SetDefaultRuntime(UnityExternal::RuntimeKind::Mono);
+    // 或 RuntimeKind::Il2Cpp（根据目标游戏选择）
 
-| 字段 | 说明 |
-| --- | --- |
-| `DumpMethod` / `DumpField` / `DumpProperty` / `DumpAttribute` / `DumpFieldOffset` / `DumpMethodOffset` / `DumpTypeDefIndex` | 是否在 `dump.cs` 输出相应的内容。 |
-| `GenerateDummyDll` | 是否生成 `DummyDll/`。 |
-| `GenerateStruct` | 是否生成 `DumpSDK/` 下的 `il2cpp.h` / `script.json` / `stringliteral.json` 等。 |
-| `DummyDllAddToken` | 是否在 DummyDll 中添加 token。 |
-| `RequireAnyKey` | 在程序结束时是否需要按键退出。 |
-| `ForceIl2CppVersion` / `ForceVersion` | 当 `ForceIl2CppVersion` 为 `true` 时，程序将根据 `ForceVersion` 指定的版本读取 il2cpp 的可执行文件（Metadata 仍然使用 header 里的版本），在部分低版本的 il2cpp 中可能会用到。 |
-| `ForceDump` | 强制将文件视为 dump 文件。 |
-| `NoRedirectedPointer` | 将 dump 文件中的指针视为未重定向的，从某些设备 dump 出的文件需要设置该项为 `true`。 |
+    // 4. 遍历所有 GameObject
+    auto gameObjects = UnityExternal::EnumerateGameObjects();
+    for (const auto& go : gameObjects)
+    {
+        try
+        {
+            UnityExternal::NativeGameObject nativeGO(go.nativeObject);
+            std::string name = nativeGO.GetName();
+            std::cout << "GameObject: " << name << std::endl;
+        }
+        catch (const std::exception& e)
+        {
+            std::cerr << "Error reading GameObject: " << e.what() << std::endl;
+        }
+    }
+
+    // 5. 查找主相机并读取相机矩阵
+    std::uintptr_t camNative = UnityExternal::FindMainCamera();
+    if (camNative)
+    {
+        glm::mat4 camMatrix = UnityExternal::GetCameraMatrix(camNative);
+
+        // 6. 获取 Transform 世界坐标
+        UnityExternal::Vector3f worldPos;
+        UnityExternal::GetTransformWorldPosition(transformNative, worldPos);
+
+        // 7. 世界坐标转屏幕坐标
+        UnityExternal::ScreenRect screen{ 0, 0, 1920, 1080 };
+        auto result = UnityExternal::WorldToScreenPoint(camMatrix, screen,
+            glm::vec3(worldPos.x, worldPos.y, worldPos.z));
+
+        if (result.visible)
+        {
+            // 绘制 ESP ...
+        }
+    }
+
+    CloseHandle(hProcess);
+    return 0;
+}
+```
+
+---
 
 ## 常见问题
 
-### `ERROR: Metadata file supplied is not valid metadata file.`
+### Q: 如何找到 GameObjectManager 全局指针偏移？
 
-`metadata.dat` 已被加密或不是有效的 metadata。关于解密的问题请去相关论坛寻求帮助，请不要在 issues 提问。
+**A:**
 
-如果你的文件是 `libil2cpp.so` 并且你拥有一台已 root 的安卓手机，你可以尝试另一个项目 [Zygisk-Il2CppDumper](https://github.com/Perfare/Zygisk-Il2CppDumper)，它能够无视 `global-metadata.dat` 加密。
+- **手动逆向**：使用 IDA Pro 或 CheatEngine 动态分析 `Camera.get_main()` 等路径来定位。
+ - **运行时盲扫**：使用 `FindGOMGlobalByScan()` 或示例工具 `gomScanner` 输出 `UnityPlayer.dll+0x????????`（表示 `gomGlobal` 槽的 RVA）。
+   - `gomScanner` 会自动枚举 `UnityWndClass` 的 PID 并逐个尝试（无需手动传 pid）。
+   - 扫描命中后会在当前目录输出 `global-metadata_pid_<pid>.dat` 与 `metadata_hint_tscore_pid_<pid>.json`。
 
-### `ERROR: Can't use auto mode to process file, try manual mode.`
+### Q: 支持多进程同时读取吗？
 
-请注意 PC 平台的可执行文件通常是 `GameAssembly.dll` 或 `*Assembly.dll`。
+**A:** 支持，通过 `IMemoryAccessor` 接口可并行读取多个进程。但需要为每个进程创建独立的 `accessor`，并通过参数传递而非全局访问器。
 
-### `ERROR: This file may be protected.`
+### Q: 是否支持多线程访问？
 
-Il2CppDumper 检测到可执行文件已被保护，可以使用 `GameGuardian` 从游戏内存中 dump `libil2cpp.so`，然后使用 Il2CppDumper 载入按提示操作，可绕过大部分保护。
+**A:** 支持，但内存访问本身是串行的（基于 `ReadProcessMemory`）。建议使用线程池模式进行批量查询。
 
-如果你拥有一台已 root 的安卓手机，你可以尝试 [Zygisk-Il2CppDumper](https://github.com/Perfare/Zygisk-Il2CppDumper)，它能够绕过几乎所有保护。
+---
 
-## License
+<div align="center">
 
-本项目遵循 MIT License（见 `LICENSE`），请在 fork/分发时保留版权声明与许可文本。
+**Platform:** Windows x64 | **License:** MIT
 
-## 感谢
-
-- Jumboperson - [Il2CppDumper](https://github.com/Jumboperson/Il2CppDumper)
+</div>
