@@ -74,5 +74,5 @@ if "ScriptMetadataMethod" in data and "ScriptMetadataMethod" in processFields:
 		idc.set_cmt(addr, name, 1)
 		idc.set_cmt(addr, '{0:X}'.format(methodAddr), 0)
 
-print 'Script finished!'
+print('Script finished!')
 

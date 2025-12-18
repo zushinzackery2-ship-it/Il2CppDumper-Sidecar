@@ -32,6 +32,10 @@ namespace Il2CppDumper
         public Dictionary<string, Dictionary<uint, Il2CppRGCTXDefinition[]>> rgctxsDictionary;
         public bool IsDumped;
 
+        public int ExpectedImageCount { get; set; }
+        public int ExpectedTypeDefinitionsCount { get; set; }
+        public int ExpectedMethodCount { get; set; }
+
         public abstract ulong MapVATR(ulong addr);
         public abstract ulong MapRTVA(ulong addr);
         public abstract bool Search();
@@ -48,15 +52,173 @@ namespace Il2CppDumper
             this.metadataUsagesCount = metadataUsagesCount;
         }
 
-        protected bool AutoPlusInit(ulong codeRegistration, ulong metadataRegistration)
+        private bool IsMappable(ulong addr)
+        {
+            try
+            {
+                MapVATR(addr);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private bool TryReadPointerAt(ulong absAddr, out ulong value)
+        {
+            value = 0;
+            var oldPos = Position;
+            try
+            {
+                Position = MapVATR(absAddr);
+                value = ReadUIntPtr();
+                return value != 0 && IsMappable(value);
+            }
+            catch
+            {
+                return false;
+            }
+            finally
+            {
+                Position = oldPos;
+            }
+        }
+
+        private int ScoreCodeRegistrationCandidate(ulong codeRegistration)
+        {
+            try
+            {
+                var reg = MapVATR<Il2CppCodeRegistration>(codeRegistration);
+                if (Version >= 24.2)
+                {
+                    if (reg.codeGenModules == 0 || reg.codeGenModulesCount == 0)
+                        return -1;
+                    if (ExpectedImageCount > 0)
+                    {
+                        var expected = (ulong)ExpectedImageCount;
+                        var min = expected > 1 ? expected / 2 : expected;
+                        var max = expected * 2;
+                        if (reg.codeGenModulesCount < min || reg.codeGenModulesCount > max)
+                            return -1;
+                    }
+                }
+
+                var score = 0;
+                if (ExpectedImageCount > 0)
+                {
+                    var expected = (ulong)ExpectedImageCount;
+                    if (reg.codeGenModulesCount == expected)
+                        score += 1000;
+                    else
+                        score += 200;
+                }
+                if (reg.codeGenModules != 0 && IsMappable(reg.codeGenModules))
+                    score += 200;
+
+                if (ExpectedMethodCount > 0)
+                {
+                    var expected = (ulong)ExpectedMethodCount;
+                    var gmpCount = reg.genericMethodPointersCount;
+                    if (gmpCount > 0 && gmpCount <= expected * 200 && gmpCount <= 5000000)
+                        score += 400;
+                    else if (gmpCount == 0)
+                        score += 10;
+                    else
+                        score -= 200;
+                }
+                if (reg.genericMethodPointers != 0 && IsMappable(reg.genericMethodPointers))
+                    score += 50;
+
+                if (reg.invokerPointers != 0 && IsMappable(reg.invokerPointers))
+                    score += 50;
+
+                return score;
+            }
+            catch
+            {
+                return -1;
+            }
+        }
+
+        private int ScoreMetadataRegistrationCandidate(ulong metadataRegistration)
+        {
+            try
+            {
+                var reg = MapVATR<Il2CppMetadataRegistration>(metadataRegistration);
+                if (reg.types == 0 || reg.typesCount <= 0)
+                    return -1;
+
+                var score = 0;
+                if (ExpectedTypeDefinitionsCount > 0)
+                {
+                    var expected = (long)ExpectedTypeDefinitionsCount;
+                    var diff = Math.Abs(reg.typesCount - expected);
+                    if (diff == 0)
+                        score += 1000;
+                    else if (diff < expected / 10)
+                        score += 300;
+                    else
+                        score -= 100;
+                }
+                if (IsMappable(reg.types))
+                    score += 200;
+                if (reg.methodSpecs != 0 && IsMappable(reg.methodSpecs))
+                    score += 50;
+                if (reg.fieldOffsets != 0 && IsMappable(reg.fieldOffsets))
+                    score += 50;
+
+                return score;
+            }
+            catch
+            {
+                return -1;
+            }
+        }
+
+        public bool AutoPlusInit(ulong codeRegistration, ulong metadataRegistration)
         {
             var originalCodeRegistration = codeRegistration;
             var originalVersion = Version;
 
-            Console.WriteLine("MetadataRegistration : {0:x}", metadataRegistration);
             if (metadataRegistration == 0)
             {
                 return false;
+            }
+
+            var metadataCandidates = new List<ulong>(2);
+            void addMetadataCandidate(ulong value)
+            {
+                if (value == 0)
+                    return;
+                if (!metadataCandidates.Contains(value))
+                    metadataCandidates.Add(value);
+            }
+
+            addMetadataCandidate(metadataRegistration);
+            if (TryReadPointerAt(metadataRegistration, out var derefMetadataRegistration))
+            {
+                addMetadataCandidate(derefMetadataRegistration);
+            }
+
+            var baseCodeRegistrations = new List<ulong>(2);
+            void addBaseCodeRegistration(ulong value)
+            {
+                if (value == 0)
+                    return;
+                if (!baseCodeRegistrations.Contains(value))
+                    baseCodeRegistrations.Add(value);
+            }
+
+            addBaseCodeRegistration(codeRegistration);
+            addBaseCodeRegistration(originalCodeRegistration);
+            if (TryReadPointerAt(codeRegistration, out var derefCodeRegistration))
+            {
+                addBaseCodeRegistration(derefCodeRegistration);
+            }
+            if (TryReadPointerAt(originalCodeRegistration, out var derefOriginalCodeRegistration))
+            {
+                addBaseCodeRegistration(derefOriginalCodeRegistration);
             }
 
             var candidates = new List<ulong>(5);
@@ -68,28 +230,58 @@ namespace Il2CppDumper
                     candidates.Add(value);
             }
 
-            var step = (ulong)(PointerSize * 2);
-            addCandidate(codeRegistration);
-            addCandidate(codeRegistration + step);
-            if (codeRegistration >= step)
-                addCandidate(codeRegistration - step);
-            addCandidate(originalCodeRegistration);
-            addCandidate(originalCodeRegistration + step);
-            if (originalCodeRegistration >= step)
-                addCandidate(originalCodeRegistration - step);
+            var stepSmall = (ulong)PointerSize;
 
-            foreach (var cr in candidates)
+            var maxDelta = (ulong)(PointerSize * 0x40);
+            foreach (var baseCr in baseCodeRegistrations)
             {
-                Console.WriteLine("CodeRegistration : {0:x}", cr);
-                try
+                addCandidate(baseCr);
+                for (ulong delta = stepSmall; delta <= maxDelta; delta += stepSmall)
                 {
-                    Version = originalVersion;
-                    Init(cr, metadataRegistration);
-                    return true;
+                    addCandidate(baseCr + delta);
+                    if (baseCr >= delta)
+                        addCandidate(baseCr - delta);
                 }
-                catch (Exception ex)
+            }
+
+            var scoredMrs = metadataCandidates
+                .Select(mr => new { mr, score = ScoreMetadataRegistrationCandidate(mr) })
+                .Where(x => x.score >= 0)
+                .OrderByDescending(x => x.score)
+                .ToList();
+            if (scoredMrs.Count == 0)
+            {
+                scoredMrs = metadataCandidates.Select(mr => new { mr, score = 0 }).ToList();
+            }
+
+            var scoredCrs = candidates
+                .Select(cr => new { cr, score = ScoreCodeRegistrationCandidate(cr) })
+                .Where(x => x.score >= 0)
+                .OrderByDescending(x => x.score)
+                .ToList();
+            if (scoredCrs.Count == 0)
+            {
+                scoredCrs = candidates.Select(cr => new { cr, score = 0 }).ToList();
+            }
+
+            foreach (var mrItem in scoredMrs)
+            {
+                var mr = mrItem.mr;
+                Console.WriteLine("MetadataRegistration : {0:x}", mr);
+                foreach (var crItem in scoredCrs)
                 {
-                    Console.WriteLine($"AutoPlusInit failed at {cr:x}: {ex.GetType().Name}");
+                    var cr = crItem.cr;
+                    Console.WriteLine("CodeRegistration : {0:x}", cr);
+                    try
+                    {
+                        Version = originalVersion;
+                        Init(cr, mr);
+                        return true;
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"AutoPlusInit failed at {cr:x}: {ex.GetType().Name}");
+                    }
                 }
             }
 
@@ -137,6 +329,56 @@ namespace Il2CppDumper
                 pCodeRegistration = MapVATR<Il2CppCodeRegistration>(codeRegistration);
             }
 
+            if (Version >= 24.2)
+            {
+                if (pCodeRegistration.codeGenModulesCount == 0 || pCodeRegistration.codeGenModules == 0)
+                {
+                    throw new InvalidDataException("Invalid CodeRegistration: codeGenModules is null");
+                }
+                if (ExpectedImageCount > 0)
+                {
+                    var expected = (ulong)ExpectedImageCount;
+                    var count = pCodeRegistration.codeGenModulesCount;
+                    var min = expected > 1 ? expected / 2 : expected;
+                    var max = expected * 2;
+                    if (count < min || count > max)
+                    {
+                        throw new InvalidDataException($"Invalid CodeRegistration: codeGenModulesCount={count} expected~{expected}");
+                    }
+                }
+                if (ExpectedMethodCount > 0)
+                {
+                    var expected = (ulong)ExpectedMethodCount;
+                    var gmpCount = pCodeRegistration.genericMethodPointersCount;
+                    if (gmpCount > expected * 200 && gmpCount > 2000000)
+                    {
+                        Console.WriteLine($"Skip genericMethodPointers: genericMethodPointersCount={gmpCount} expected~{expected}");
+                        pCodeRegistration.genericMethodPointersCount = 0;
+                        pCodeRegistration.genericMethodPointers = 0;
+                    }
+                    var invokerCount = pCodeRegistration.invokerPointersCount;
+                    if (invokerCount > expected * 10 && invokerCount > 500000)
+                    {
+                        Console.WriteLine($"Skip invokerPointers: invokerPointersCount={invokerCount} expected~{expected}");
+                        pCodeRegistration.invokerPointersCount = 0;
+                        pCodeRegistration.invokerPointers = 0;
+                    }
+                    var ripCount = pCodeRegistration.reversePInvokeWrapperCount;
+                    if (ripCount > expected * 10 && ripCount > 500000)
+                    {
+                        Console.WriteLine($"Skip reversePInvokeWrappers: reversePInvokeWrapperCount={ripCount} expected~{expected}");
+                        pCodeRegistration.reversePInvokeWrapperCount = 0;
+                        pCodeRegistration.reversePInvokeWrappers = 0;
+                    }
+                    var uvcCount = pCodeRegistration.unresolvedVirtualCallCount;
+                    if (uvcCount > expected * 10 && uvcCount > 500000)
+                    {
+                        Console.WriteLine($"Skip unresolvedVirtualCallPointers: unresolvedVirtualCallCount={uvcCount} expected~{expected}");
+                        pCodeRegistration.unresolvedVirtualCallCount = 0;
+                        pCodeRegistration.unresolvedVirtualCallPointers = 0;
+                    }
+                }
+            }
             Console.WriteLine($"pCodeRegistration.reversePInvokeWrapperCount={pCodeRegistration.reversePInvokeWrapperCount}");
             Console.WriteLine($"pCodeRegistration.genericMethodPointersCount={pCodeRegistration.genericMethodPointersCount}");
             Console.WriteLine($"pCodeRegistration.invokerPointersCount={pCodeRegistration.invokerPointersCount}");
@@ -163,8 +405,22 @@ namespace Il2CppDumper
             Console.WriteLine($"pMetadataRegistration.fieldOffsets=0x{pMetadataRegistration.fieldOffsets:x}");
             Console.WriteLine($"pMetadataRegistration.methodSpecs=0x{pMetadataRegistration.methodSpecs:x}");
 
-            genericMethodPointers = MapVATR<ulong>(pCodeRegistration.genericMethodPointers, pCodeRegistration.genericMethodPointersCount);
-            invokerPointers = MapVATR<ulong>(pCodeRegistration.invokerPointers, pCodeRegistration.invokerPointersCount);
+            try
+            {
+                genericMethodPointers = MapVATR<ulong>(pCodeRegistration.genericMethodPointers, pCodeRegistration.genericMethodPointersCount);
+            }
+            catch
+            {
+                genericMethodPointers = Array.Empty<ulong>();
+            }
+            try
+            {
+                invokerPointers = MapVATR<ulong>(pCodeRegistration.invokerPointers, pCodeRegistration.invokerPointersCount);
+            }
+            catch
+            {
+                invokerPointers = Array.Empty<ulong>();
+            }
             if (Version < 27)
             {
                 customAttributeGenerators = MapVATR<ulong>(pCodeRegistration.customAttributeGenerators, pCodeRegistration.customAttributeCount);
@@ -176,9 +432,27 @@ namespace Il2CppDumper
             if (Version >= 22)
             {
                 if (pCodeRegistration.reversePInvokeWrapperCount != 0)
-                    reversePInvokeWrappers = MapVATR<ulong>(pCodeRegistration.reversePInvokeWrappers, pCodeRegistration.reversePInvokeWrapperCount);
+                {
+                    try
+                    {
+                        reversePInvokeWrappers = MapVATR<ulong>(pCodeRegistration.reversePInvokeWrappers, pCodeRegistration.reversePInvokeWrapperCount);
+                    }
+                    catch
+                    {
+                        reversePInvokeWrappers = Array.Empty<ulong>();
+                    }
+                }
                 if (pCodeRegistration.unresolvedVirtualCallCount != 0)
-                    unresolvedVirtualCallPointers = MapVATR<ulong>(pCodeRegistration.unresolvedVirtualCallPointers, pCodeRegistration.unresolvedVirtualCallCount);
+                {
+                    try
+                    {
+                        unresolvedVirtualCallPointers = MapVATR<ulong>(pCodeRegistration.unresolvedVirtualCallPointers, pCodeRegistration.unresolvedVirtualCallCount);
+                    }
+                    catch
+                    {
+                        unresolvedVirtualCallPointers = Array.Empty<ulong>();
+                    }
+                }
             }
             genericInstPointers = MapVATR<ulong>(pMetadataRegistration.genericInsts, pMetadataRegistration.genericInstsCount);
             genericInsts = Array.ConvertAll(genericInstPointers, MapVATR<Il2CppGenericInst>);
@@ -247,17 +521,24 @@ namespace Il2CppDumper
             }
             genericMethodTable = MapVATR<Il2CppGenericMethodFunctionsDefinitions>(pMetadataRegistration.genericMethodTable, pMetadataRegistration.genericMethodTableCount);
             methodSpecs = MapVATR<Il2CppMethodSpec>(pMetadataRegistration.methodSpecs, pMetadataRegistration.methodSpecsCount);
-            foreach (var table in genericMethodTable)
+            if (genericMethodPointers != null && genericMethodPointers.Length > 0)
             {
-                var methodSpec = methodSpecs[table.genericMethodIndex];
-                var methodDefinitionIndex = methodSpec.methodDefinitionIndex;
-                if (!methodDefinitionMethodSpecs.TryGetValue(methodDefinitionIndex, out var list))
+                foreach (var table in genericMethodTable)
                 {
-                    list = new List<Il2CppMethodSpec>();
-                    methodDefinitionMethodSpecs.Add(methodDefinitionIndex, list);
+                    var methodSpec = methodSpecs[table.genericMethodIndex];
+                    var methodDefinitionIndex = methodSpec.methodDefinitionIndex;
+                    if (!methodDefinitionMethodSpecs.TryGetValue(methodDefinitionIndex, out var list))
+                    {
+                        list = new List<Il2CppMethodSpec>();
+                        methodDefinitionMethodSpecs.Add(methodDefinitionIndex, list);
+                    }
+                    list.Add(methodSpec);
+                    var idx = (int)table.indices.methodIndex;
+                    if (idx >= 0 && idx < genericMethodPointers.Length)
+                    {
+                        methodSpecGenericMethodPointers.Add(methodSpec, genericMethodPointers[idx]);
+                    }
                 }
-                list.Add(methodSpec);
-                methodSpecGenericMethodPointers.Add(methodSpec, genericMethodPointers[table.indices.methodIndex]);
             }
         }
 

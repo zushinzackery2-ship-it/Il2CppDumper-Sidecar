@@ -48,7 +48,7 @@ if "ScriptMethod" in data and "ScriptMethod" in processFields:
 		set_name(addr, name)
 		signature = scriptMethod["Signature"].encode("utf-8")
 		if apply_type(addr, parse_decl(signature, 0), 1) == False:
-			print "apply_type failed:", hex(addr), signature
+			print("apply_type failed:", hex(addr), signature)
 
 if "ScriptString" in data and "ScriptString" in processFields:
 	index = 1
@@ -71,7 +71,7 @@ if "ScriptMetadata" in data and "ScriptMetadata" in processFields:
 		if scriptMetadata["Signature"] is not None:
 			signature = scriptMetadata["Signature"].encode("utf-8")
 			if apply_type(addr, parse_decl(signature, 0), 1) == False:
-				print "apply_type failed:", hex(addr), signature
+				print("apply_type failed:", hex(addr), signature)
 
 if "ScriptMetadataMethod" in data and "ScriptMetadataMethod" in processFields:
 	scriptMetadataMethods = data["ScriptMetadataMethod"]
@@ -83,5 +83,5 @@ if "ScriptMetadataMethod" in data and "ScriptMetadataMethod" in processFields:
 		idc.set_cmt(addr, name, 1)
 		idc.set_cmt(addr, '{0:X}'.format(methodAddr), 0)
 
-print 'Script finished!'
+print('Script finished!')
 

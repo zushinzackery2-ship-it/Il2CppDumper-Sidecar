@@ -236,7 +236,7 @@ namespace Il2CppDumper
             il2Cpp.SetProperties(version, metadata.metadataUsagesCount);
             Console.WriteLine($"Il2Cpp Version: {il2Cpp.Version}");
 
-            if (TryInitFromHint(il2Cpp, metadataPath, hintPath))
+            if (TryInitFromHint(il2Cpp, metadata, metadataPath, hintPath))
             {
                 return true;
             }
@@ -329,7 +329,7 @@ namespace Il2CppDumper
             return true;
         }
 
-        private static bool TryInitFromHint(Il2Cpp il2Cpp, string metadataPath, string hintPathOverride)
+        private static bool TryInitFromHint(Il2Cpp il2Cpp, Metadata metadata, string metadataPath, string hintPathOverride)
         {
             try
             {
@@ -354,39 +354,46 @@ namespace Il2CppDumper
 
                 if (il2Cpp is PE)
                 {
+                    il2Cpp.ExpectedImageCount = metadata.imageDefs.Length;
+                    il2Cpp.ExpectedTypeDefinitionsCount = metadata.typeDefs.Length;
+                    il2Cpp.ExpectedMethodCount = metadata.methodDefs.Count(x => x.methodIndex >= 0);
+
                     var codeRegRva = ParseHexUlong(hint.il2cpp?.code_registration_rva);
                     var metaRegRva = ParseHexUlong(hint.il2cpp?.metadata_registration_rva);
-                    ulong codeReg;
-                    ulong metaReg;
+                    var runtimeBase = ParseHexUlong(hint.module?.base_addr);
+                    var codeRegRuntime = ParseHexUlong(hint.il2cpp?.code_registration);
+                    var metaRegRuntime = ParseHexUlong(hint.il2cpp?.metadata_registration);
+
                     if (codeRegRva != 0 && metaRegRva != 0)
                     {
                         Console.WriteLine($"Hint mode: RVA codeRegRva=0x{codeRegRva:x} metaRegRva=0x{metaRegRva:x}");
-                        codeReg = il2Cpp.ImageBase + codeRegRva;
-                        metaReg = il2Cpp.ImageBase + metaRegRva;
+                        var codeReg = il2Cpp.ImageBase + codeRegRva;
+                        var metaReg = il2Cpp.ImageBase + metaRegRva;
+                        Console.WriteLine($"Hint CodeRegistration : {codeReg:x}");
+                        Console.WriteLine($"Hint MetadataRegistration : {metaReg:x}");
+                        if (il2Cpp.AutoPlusInit(codeReg, metaReg))
+                        {
+                            return true;
+                        }
+                        Console.WriteLine("Hint RVA mode failed, trying RuntimeVA...");
                     }
-                    else
+
+                    if (runtimeBase == 0 || codeRegRuntime == 0 || metaRegRuntime == 0)
                     {
-                        var runtimeBase = ParseHexUlong(hint.module?.base_addr);
-                        var codeRegRuntime = ParseHexUlong(hint.il2cpp?.code_registration);
-                        var metaRegRuntime = ParseHexUlong(hint.il2cpp?.metadata_registration);
-                        if (runtimeBase == 0 || codeRegRuntime == 0 || metaRegRuntime == 0)
-                        {
-                            Console.WriteLine("Hint not used: missing module.base or il2cpp registrations");
-                            return false;
-                        }
-                        if (codeRegRuntime < runtimeBase || metaRegRuntime < runtimeBase)
-                        {
-                            Console.WriteLine("Hint not used: runtime addresses are below module base");
-                            return false;
-                        }
-                        Console.WriteLine($"Hint mode: RuntimeVA moduleBase=0x{runtimeBase:x}");
-                        codeReg = il2Cpp.ImageBase + (codeRegRuntime - runtimeBase);
-                        metaReg = il2Cpp.ImageBase + (metaRegRuntime - runtimeBase);
+                        Console.WriteLine("Hint not used: missing module.base or il2cpp registrations");
+                        return false;
                     }
-                    Console.WriteLine($"Hint CodeRegistration : {codeReg:x}");
-                    Console.WriteLine($"Hint MetadataRegistration : {metaReg:x}");
-                    il2Cpp.Init(codeReg, metaReg);
-                    return true;
+                    if (codeRegRuntime < runtimeBase || metaRegRuntime < runtimeBase)
+                    {
+                        Console.WriteLine("Hint not used: runtime addresses are below module base");
+                        return false;
+                    }
+                    Console.WriteLine($"Hint mode: RuntimeVA moduleBase=0x{runtimeBase:x}");
+                    var codeReg2 = il2Cpp.ImageBase + (codeRegRuntime - runtimeBase);
+                    var metaReg2 = il2Cpp.ImageBase + (metaRegRuntime - runtimeBase);
+                    Console.WriteLine($"Hint CodeRegistration : {codeReg2:x}");
+                    Console.WriteLine($"Hint MetadataRegistration : {metaReg2:x}");
+                    return il2Cpp.AutoPlusInit(codeReg2, metaReg2);
                 }
 
                 Console.WriteLine("Hint not used: only PE is supported");

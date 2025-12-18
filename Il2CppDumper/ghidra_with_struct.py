@@ -47,11 +47,11 @@ def set_type(addr, type):
 	if addrType is None:
 		print("Could not identify type " + type + "(parsed as '" + newType + "')")
 	else:
-	    try:
-	        createData(addr, addrType)
-	    except ghidra.program.model.util.CodeUnitInsertionException:
-	        print("Warning: unable to set type (CodeUnitInsertionException)")
-	    
+		try:
+			createData(addr, addrType)
+		except ghidra.program.model.util.CodeUnitInsertionException:
+			print("Warning: unable to set type (CodeUnitInsertionException)")
+		
 
 def make_function(start):
 	func = getFunctionAt(start)
@@ -70,7 +70,7 @@ def set_sig(addr, name, sig):
 		print("Attempting to modify...")
 		# try to fix by renaming the parameters
 		try:
-			newSig = sig.replace(", ","ext, ").replace("\)","ext\)")
+			newSig = sig.replace(", ","ext, ").replace("\\)","ext\\)")
 			typeSig = CParserUtils.parseSignature(None, currentProgram, newSig, False)
 		except:
 			print("Warning: also unable to parse")
@@ -79,8 +79,8 @@ def set_sig(addr, name, sig):
 			return
 	if typeSig is not None:
 		try:
-            		typeSig.setName(name)
-            		ApplyFunctionSignatureCmd(addr, typeSig, USER_DEFINED, False, True).applyTo(currentProgram)
+			typeSig.setName(name)
+			ApplyFunctionSignatureCmd(addr, typeSig, USER_DEFINED, False, True).applyTo(currentProgram)
 		except:
 			print("Warning: unable to set Signature. ApplyFunctionSignatureCmd() Failed.")
 
@@ -153,4 +153,4 @@ if "ScriptMethod" in data and "ScriptMethod" in processFields:
 		name = scriptMethod["Name"].encode("utf-8")
 		set_sig(addr, name, sig)
 
-print 'Script finished!'
+print('Script finished!')

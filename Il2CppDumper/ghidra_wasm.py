@@ -53,8 +53,8 @@ if "ScriptMethod" in data and "ScriptMethod" in processFields:
 			name = scriptMethod["Name"].encode("utf-8")
 			set_name(addr, name)
 		else:
-			print "Warning at %s:" % scriptMethod["Name"]
-			print "Symbol %s not found!" % symbolName
+			print("Warning at %s:" % scriptMethod["Name"])
+			print("Symbol %s not found!" % symbolName)
 		monitor.incrementProgress(1)
 
 if "ScriptString" in data and "ScriptString" in processFields:
@@ -97,4 +97,4 @@ if "ScriptMetadataMethod" in data and "ScriptMetadataMethod" in processFields:
 if "Addresses" in data and "Addresses" in processFields:
 	pass
 
-print 'Script finished!'
+print('Script finished!')
