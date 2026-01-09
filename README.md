@@ -1,6 +1,7 @@
 # Il2CppDumper（本分支）
 
 基于源仓库 `Il2CppDumper v6.7.46` 的改版，主要目标是提升“基于 hint 的初始化成功率”和整体稳定性，避免因为 `CodeRegistration/MetadataRegistration` 不准确导致 `RVA/Offset = -1` 大面积出现。
+同时优化了检查逻辑，提高了对映像魔改的游戏的global-metadata数据的兼容性，不会轻易出现结构问题导致的dump失败报错情况。
 
 ## 本分支增强
 
@@ -33,3 +34,4 @@ Il2CppDumper.exe <executable-file> <metadata.dat> <output-directory> [hint.json]
 ## License
 
 MIT，见 `LICENSE`。
+
